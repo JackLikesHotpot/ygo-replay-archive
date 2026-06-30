@@ -1,109 +1,171 @@
-import re 
+import re
 import pandas as pd
 from prefect import task
+from pathlib import Path
 
-# Global Regex Compilation Matrix
-RE_EURO = re.compile(r"(?:WCQ:\s*)?\bEuropean\b(?:\s+Yu-Gi-Oh!)?\s+\bChampionship\b", re.IGNORECASE)
-RE_NATS = re.compile(r"WCQ:\s*([A-Za-z]+)\s+National Championship", re.IGNORECASE)
-RE_OPEN = re.compile(r"\b([A-Za-z]+)\s+Open\b", re.IGNORECASE)
-RE_YEARS = re.compile(r'\b(19\d{2}|20\d{2})\b')
+CHECKPOINT_DIR = Path("checkpoints")
 
-def clean_base_text(full_title):
-    """Handles pipe splitting, string type conversions, and leading/trailing whitespace."""
-    base_text = str(full_title).strip()
-    if "|" in base_text:
-        base_text = base_text.split("|")[0].strip()
-    return base_text
+# REGEX
 
+RE_YEAR = re.compile(r'(19\d{2}|20\d{2})\b')
 
-def extract_tournament_year(text):
-    """Finds the main tournament year and strips it out of the title string."""
-    year_match = RE_YEARS.search(text)
-    if year_match:
-        year = year_match.group(1)
-        clean_title = text.replace(year, "").replace("  ", " ").strip(" -:")
-        return year, clean_title
-    return "Unknown", text
+RE_YCS = re.compile(r'\bYCS\b', re.IGNORECASE)
+RE_WORLDS = re.compile(r'\bWorld\s+Championship\b|\bWCS\b', re.IGNORECASE)
+RE_WCQ = re.compile(r'WCQ\b|\bWorld\s+Qualifying\s+Points\b|\bEuropean\s+(?:Yu[\s-]?Gi[\s-]?Oh!?\s*)?Championship\b', re.IGNORECASE)
+RE_WQP = re.compile(r'\bWQP\b', re.IGNORECASE)
+RE_NATIONAL = re.compile(r'\b([A-Za-z]+)\s+National\b|\bNational\s+Championship\b', re.IGNORECASE)
+RE_OPEN = re.compile(r'\b([A-Za-z]+)\s+Open\b', re.IGNORECASE)
 
+RE_REMOTE = re.compile(r'\bRemote\s+Duel\b', re.IGNORECASE)
+RE_DRAGON = re.compile(r'\bDragon\s+Duel\b', re.IGNORECASE)
 
-def process_ycs_event(clean_title, base_text):
-    """Applies specialized transformations for YCS, Remote Duels, and Time Wizard formats."""
-    category = 'Advanced'
-    is_remote = 'Remote Duel' in clean_title
-    
-    if any(kw in clean_title for kw in ['Time Wizard', 'Ultimate Time Wizard']) or any(fmt in base_text for fmt in ['Edison', 'Goat', 'Toss', 'HAT']):
-        category = 'Time Wizard'
-        clean_title = clean_title.replace('Ultimate Time Wizard', '').replace('Time Wizard', '').replace('Format', '')
-        clean_title = RE_YEARS.sub('', clean_title)  # Wipe retro format years (e.g., 2010)
+RE_DUELING_ARCHIVES = re.compile(r'^\s*Dueling\s+Archives\s*[:\-]?\s*', re.IGNORECASE)
+RE_NOISE_PREFIX = re.compile(r'^(?:Yu-Gi-Oh!\s*)?\d+(?:st|nd|rd|th)\s+', re.IGNORECASE)
+RE_SPLIT_NOISE = re.compile(r'\s*[\|\–—\-,:]\s*')
+RE_NA_WCQ_LONGFORM = re.compile(r'\bNorth\s+American?\s+WCQ\b', re.IGNORECASE)
+RE_YUGIOH_PREFIX = re.compile(r'^Yu[\s-]?Gi[\s-]?Oh!?\s*', re.IGNORECASE)
+RE_IN_CITY = re.compile(r'\b(YCS|WCQ)\s+in\s+', re.IGNORECASE)
+RE_WCS_STANDALONE = re.compile(r'\bWCS\b', re.IGNORECASE)
+RE_EU_WCQ_VARIANTS = re.compile(
+    r'\bWCQ\s+EC\b|\bWCQ\s+European\s+Championship\b|\bEuropean\s+World\s+Championship\s+Qualifier\b|\bEuropean\s+(?:Yu[\s-]?Gi[\s-]?Oh!?\s*)?Championship\b',
+    re.IGNORECASE
+)
+RE_WQP_STANDALONE = re.compile(r'\bWQP\b|\bWGP\b', re.IGNORECASE)
+RE_BRACKET_COUNTRY = re.compile(r'^\[\w{2}\]\s*', re.IGNORECASE)
+RE_WC_QUALIFIER = re.compile(r'\bWorld\s+Championship\s+Qualifier\b', re.IGNORECASE)
+RE_TCG_NOISE = re.compile(r'\b(?:TRADING\s+CARD\s+GAME|TCG)\s+', re.IGNORECASE)
+RE_TRAILING_PARENS = re.compile(r'\s*\([^)]*\)\s*$')
+RE_WCQ_NATIONAL_PREFIX = re.compile(r'\bWCQ\s+(?=\w+\s+National\s+Championship)', re.IGNORECASE)
+# CLEANING FUNCTIONS
 
-    if 'Genesys' in clean_title:
-        category = 'Genesys'
-        
-    clean_title = clean_title.replace('Yu-Gi-Oh! Championship Series', 'YCS')
-
-    if 'YCS' in clean_title:
-        clean_title = 'YCS' + clean_title.split('YCS')[1]
-        clean_title = re.sub(r'\bYCS\s+in\s+', 'YCS ', clean_title, flags=re.IGNORECASE)
-        
-    if is_remote:
-        clean_title = 'Remote ' + clean_title
-
-    if any(dash in clean_title for dash in ['–', '-']) and 'Top' in clean_title:
-        split_char = '–' if '–' in clean_title else '-'
-        parts = clean_title.split(split_char)
-        clean_title = f"{parts[0].strip()} ({parts[1].strip()})"
-        
-    clean_title = re.sub(r'\s+', ' ', clean_title).strip(" -")
-    return clean_title, category
+def strip_year(title: str):
+    m = RE_YEAR.search(title)
+    if m:
+        return m.group(1), RE_YEAR.sub("", title).strip()
+    return "Unknown", title
 
 
-def identify_other_categories(clean_title):
-    """Checks for World Championships, Nationals, Opens, and Continental WCQs."""
-    category = 'Advanced'
-    
-    # 1. World Championships
-    if 'World Championship' in clean_title or 'WCS' in clean_title:
-        if 'Dragon Duel' in clean_title:
-            category = 'Dragon Duel'
-        return 'World Championship', category
-    
-    # 2. National Championships
-    if match_nat := RE_NATS.search(clean_title):
-        country = match_nat.group(1).strip()
-        return f"{country} National Championship", category
-        
-    # 3. Open Tournaments
-    if match_open := RE_OPEN.search(clean_title):
-        country = match_open.group(1).strip()
-        country = 'UK' if country.lower() == 'uk' else country.capitalize()
-        return f"{country} Open", category
-        
-    # 4. Continental WCQs
-    if 'WCQ: EC' in clean_title or 'World Championship Qualifier' in clean_title or RE_EURO.search(clean_title):
-        return 'European WCQ', category
-        
-    return clean_title, category
+def clean_base(title: str) -> str:
+    title = str(title).strip()
+    if "|" in title:
+        title = title.split("|")[0]
+    return title.strip()
+
+def normalize_remote(title: str) -> str:
+    if RE_REMOTE.search(title):
+        return "Remote Duel Invitational"
+    return title
+
+def normalize_ycs(title: str) -> str:
+    title = RE_NOISE_PREFIX.sub("", title)
+
+    title = re.sub(
+        r"Yu-Gi-Oh!\s*Championship\s*Series",
+        "YCS",
+        title,
+        flags=re.IGNORECASE
+    )
+
+    if "YCS" in title:
+        title = "YCS" + title.split("YCS", 1)[1]
+
+    title = RE_SPLIT_NOISE.sub(" ", title)
+    return re.sub(r"\s+", " ", title).strip()
+
+def normalize_wcq_variants(title: str, was_dueling_archives: bool = False) -> str:
+    title = RE_WQP_STANDALONE.sub("WQP", title)   # normalize WGP typo -> WQP, but keep distinct from WCQ
+    title = RE_NA_WCQ_LONGFORM.sub("NA World Championship", title)
+    title = RE_EU_WCQ_VARIANTS.sub("EU WCQ", title)
+    title = RE_WC_QUALIFIER.sub("WCQ", title)
+    title = RE_WCQ_NATIONAL_PREFIX.sub("", title)
+
+    if was_dueling_archives and re.search(r'\bWCQ\b', title, re.IGNORECASE) and "NA WORLD CHAMPIONSHIP" not in title.upper():
+        title = re.sub(r'\bWCQ\b', "NA World Championship", title, flags=re.IGNORECASE)
+
+    return title
+
+def normalize_phrasing(title: str, was_dueling_archives: bool = False) -> str:
+    title = RE_YUGIOH_PREFIX.sub("", title)
+    title = RE_WQP_STANDALONE.sub("WQP", title)
+    title = RE_IN_CITY.sub(r"\1 ", title)
+    title = RE_WCS_STANDALONE.sub("World Championship", title)
+    title = RE_BRACKET_COUNTRY.sub("", title)
+    title = RE_TCG_NOISE.sub("", title)
+    title = RE_NA_WCQ_LONGFORM.sub("NA World Championship Qualifer", title)
+    title = RE_EU_WCQ_VARIANTS.sub("EU World Championship Qualifer", title)
+    title = RE_WC_QUALIFIER.sub("WCQ", title)
+    title = RE_WCQ_NATIONAL_PREFIX.sub("World Qualifying Points", title)
+    title = RE_TRAILING_PARENS.sub("", title).strip()
+
+    if was_dueling_archives and re.search(r'\bWCQ\b', title, re.IGNORECASE) and "NA WORLD CHAMPIONSHIP" not in title.upper():
+        title = re.sub(r'\bWCQ\b', "NA World Championship", title, flags=re.IGNORECASE)
+
+    return title
+
+# CLASSIFICATION
+
+def classify(title: str) -> str:
+    if RE_DRAGON.search(title):
+        return "Dragon Duel"
+    if RE_REMOTE.search(title):
+        return "Remote Duel Invitational"
+    if RE_WQP.search(title):
+        return "WQP"
+    if RE_YCS.search(title):
+        return "YCS"
+    if RE_WORLDS.search(title):
+        return "World Championship"
+    if RE_WCQ.search(title):
+        return "WCQ"
+    if RE_NATIONAL.search(title):
+        return "National Championship"
+    if RE_OPEN.search(title):
+        return "Open Tournament"
+    return "Other"
 
 
-def extract_title_and_year(full_title):
-    if 'interview' in str(full_title).lower():
+def process_title(full_title: str):
+    if "interview" in str(full_title).lower():
         return pd.Series([None, None, None])
-        
-    base_text = clean_base_text(full_title)
-    year, clean_title = extract_tournament_year(base_text)
-    if 'Yu-Gi-Oh! Championship Series' in clean_title or 'YCS' in clean_title:
-        clean_title, category = process_ycs_event(clean_title, base_text)
-    else:
-        clean_title, category = identify_other_categories(clean_title)
-        
+
+    was_dueling_archives = bool(RE_DUELING_ARCHIVES.search(full_title))
+
+    base = clean_base(full_title)
+    year, title = strip_year(base)
+    title = normalize_remote(title)
+    title = normalize_ycs(title)
+    title = normalize_phrasing(title, was_dueling_archives)
+    title = RE_DUELING_ARCHIVES.sub("", title).strip()
+    title = re.sub(r"\s+", " ", title).strip(" -:")
+
+    category = classify(title)
+    clean_title = title
+
     return pd.Series([clean_title, year, category])
 
 @task(name="Parse playlist titles")
-def parse_titles(df: pd.DataFrame) -> pd.DataFrame:
-    df[["Clean Title", "Year", "Category"]] = df["Playlist Title"].apply(extract_title_and_year)
-    df = df.dropna(subset=["Clean Title"])
-    print(f"Parsed {len(df)} playlists after dropping interviews.")
-    return df[["Clean Title", "Year", "Category", "Video Count", "Playlist ID", "Playlist Title"]]
+def parse_titles(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
+    out = df.copy()
+    out.columns = ["Playlist Title", "Video Count", "Playlist ID"]
+
+    parsed = out["Playlist Title"].apply(process_title)
+    out[["Clean Title", "Year", "Category"]] = parsed
+    out = out.dropna(subset=["Clean Title"])
+
+    result = out[[
+        "Clean Title",
+        "Year",
+        "Category",
+        "Video Count",
+        "Playlist ID",
+        "Playlist Title"
+    ]]
+
+    if verbose:
+        print(f"--- Parsed {len(result)} playlists ---")
+
+    return result
+
 
 def run(filtered_df: pd.DataFrame) -> pd.DataFrame:
     return parse_titles(filtered_df)

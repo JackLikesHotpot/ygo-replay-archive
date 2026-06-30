@@ -4,8 +4,6 @@ from googleapiclient.errors import HttpError
 from prefect import task
 from prefect.tasks import exponential_backoff
 
-CHECKPOINT = "checkpoints/stage1_playlists.parquet"
-
 @task(name="Resolve channel handle", retries=3, retry_delay_seconds=exponential_backoff(backoff_factor=2))
 def get_channel_id(youtube, handle: str) -> str:
   response = youtube.search().list(
@@ -52,6 +50,8 @@ def fetch_playlists(youtube, channel_id: str) -> pd.DataFrame:
   return df
 
 def run(youtube, handle: str, resume: bool = True) -> pd.DataFrame:
+  CHECKPOINT = f"checkpoints/stage1_playlists_{handle}.parquet"
+
   if resume and os.path.exists(CHECKPOINT):
     print(f"[stage1] Resuming from checkpoint")
     return pd.read_parquet(CHECKPOINT)

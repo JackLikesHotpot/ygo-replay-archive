@@ -3,48 +3,57 @@ import pandas as pd
 from prefect import task
 import os
 
-CHECKPOINT = "checkpoints/stage4_videos.parquet"
+CHECKPOINT_DIR = "checkpoints"
 
 @task(name='Get videos from playlists')
-def get_playlist_videos(youtube, playlist_ids: list) -> pd.DataFrame:
-  video_data = []
+def get_playlist_videos(youtube, parsed_df: pd.DataFrame) -> pd.DataFrame:
+    video_data = []
 
-  for id in playlist_ids:
-    next_page_token = None
+    for id in parsed_df["Playlist ID"].tolist():
+        next_page_token = None
 
-    while True:
-      response = youtube.playlistItems().list(
-        part = 'snippet',
-        playlistId = id,
-        maxResults = 50,
-        pageToken = next_page_token
-      ).execute()
+        while True:
+            response = youtube.playlistItems().list(
+                part='snippet',
+                playlistId=id,
+                maxResults=50,
+                pageToken=next_page_token
+            ).execute()
 
-      for item in response.get('items', []):
-        snippet = item.get('snippet', {})
-        title = snippet.get('title', '')
-        description = snippet.get('description', '')
-        video_id = snippet.get('resourceId', {}).get('videoId', 'Unknown')
+            for item in response.get('items', []):
+                snippet = item.get('snippet', {})
+                video_data.append({
+                    'Playlist ID':       id,
+                    'Video ID':          snippet.get('resourceId', {}).get('videoId', 'Unknown'),
+                    'Title':             snippet.get('title', ''),
+                    'Video Description': snippet.get('description', '')
+                })
 
-        video_data.append({
-            'Playlist ID': id,
-            'Video ID': video_id, 
-            'Title': title,
-            'Video Description': description
-        })
+            next_page_token = response.get('nextPageToken')
+            if not next_page_token:
+                break
 
-      next_page_token = response.get('nextPageToken')
-      if not next_page_token:
-        break
+    df = pd.DataFrame(video_data)
 
-    return pd.DataFrame(video_data)
-  
+    df = df.merge(
+        parsed_df[["Playlist ID", "Clean Title", "Year", "Category", "Playlist Title"]],
+        on="Playlist ID",
+        how="left"
+    )
+
+    return df
+
+
 def run(youtube, parsed_df: pd.DataFrame, resume: bool = True) -> pd.DataFrame:
-    if resume and os.path.exists(CHECKPOINT):
-      print(f"[stage1] Resuming from checkpoint")
-      return pd.read_parquet(CHECKPOINT)
-    
-    playlists_id = parsed_df["Playlist ID"].tolist()
-    df = get_playlist_videos(youtube, playlists_id)
-    df.to_parquet(CHECKPOINT, index=False)
+    checkpoint = f"{CHECKPOINT_DIR}/stage4_videos.parquet"
+
+    if resume and os.path.exists(checkpoint):
+        print(f"[stage4] Resuming from checkpoint")
+        return pd.read_parquet(checkpoint)
+
+    df = get_playlist_videos(youtube, parsed_df)
+
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+    df.to_parquet(checkpoint, index=False)
+    print(f"[stage4] Saved {len(df)} videos")
     return df
