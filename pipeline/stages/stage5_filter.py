@@ -9,7 +9,13 @@ RE_MATCH_INDICATOR = re.compile(
     r'\bround\s*\d+|\btop\s*\d+|\bfinals?\b|\bsemi[-\s]?finals?\b|\bvs\.?\b|\b\d+(?:st|nd|rd|th)\s+place\b',
     re.IGNORECASE
 )
-RE_EXCLUDE = re.compile(r'\bannouncement\b|\binterview\b|\bdiscussion\b|\bvlog\b|\bdeck\s*profile\b', re.IGNORECASE)
+RE_EXCLUDE = re.compile(
+    r'\bannouncement\b|\binterview\b|\bdiscussion\b|\bdiscuss\b|\bvlog\b|'
+    r'\bdeck\s*profile\b|\bgames\b|\bmemories\b|\bchronicles\b|\bcaster\s+vs\b|'
+    r'\bduel\s+links\b|\byu-gi-oh!\s+games\b|\bhighlights\b|\bhot\s+takes\b|'
+    r'\bmaster\s+vs\b|\bceremony\b|\bshowcase\b|\breal\s+life\s+duel\b|\binfluencer\b',
+    re.IGNORECASE
+)
 RE_LIVESTREAM_DAY = re.compile(r'\bday\s*[123]\b', re.IGNORECASE)
 
 
